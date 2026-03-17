@@ -1,0 +1,28 @@
+[tool.black]
+line-length = 100
+target-version = ["py311"]
+
+[tool.ruff]
+line-length = 100
+fix = true
+
+[tool.ruff.lint]
+select = ["E","F","I","W","UP","B","C90"]
+ignore = ["E203","E266","E501"]  # Black-compatible ignores
+
+[tool.ruff.format]
+# Ruff’s formatter replaces Black; if you prefer Black, skip this section
+quote-style = "double"
+indent-style = "space"
+line-ending = "lf"
+
+[tool.isort]
+profile = "black"
+line_length = 100
+
+[tool.mypy]
+python_version = "3.11"
+ignore_missing_imports = true
+warn_unused_ignores = true
+warn_redundant_casts = true
+warn_unused_configs = true
