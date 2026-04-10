@@ -1,3 +1,6 @@
+<img width="1735" height="858" alt="image" src="https://github.com/user-attachments/assets/41921f3f-bc55-467e-8a69-2e0a819ce115" />
+
+
 # manet-heatmap
 
 A Streamlit-based MANET RF coverage and throughput heatmap tool for urban and terrain-aware analysis.
