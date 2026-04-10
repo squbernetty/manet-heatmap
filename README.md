@@ -1,3 +1,13 @@
+# manet-heatmap
+
+> Status: experimental work in progress
+> 
+> This repository is public to invite review, bug reports, and contributions.
+> Bugs, crashes, unstable behavior, and incorrect results should be expected.
+> This tool is not validated for operational use.
+
+Terrain-aware MANET coverage and throughput heatmap exploration tool built with Streamlit.
+
 <img width="1735" height="858" alt="image" src="https://github.com/user-attachments/assets/41921f3f-bc55-467e-8a69-2e0a819ce115" />
 
 
