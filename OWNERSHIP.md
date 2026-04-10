@@ -1,6 +1,6 @@
 # Ownership and Credit
 
-This repository is owned and maintained by Kubilay Yildirim unless explicitly stated otherwise.
+This repository is owned and maintained by (https://github.com/squbernetty) unless explicitly stated otherwise.
 
 ## Repository ownership
 
