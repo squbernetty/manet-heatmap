@@ -1169,9 +1169,6 @@ def _osmnx_fetch_buildings_safe(
     Runs the core OSMnx fetch in a worker thread to avoid blocking the UI.
     Returns (GeoDataFrame, working_endpoint | None). If all fail, returns (empty_gdf, "OverpassFetchFailed").
     """
-    from concurrent.futures import ThreadPoolExecutor
-    from concurrent.futures import TimeoutError as FuturesTimeout
-
     from requests.exceptions import ConnectionError as ReqConnError
     from requests.exceptions import Timeout
 
@@ -1217,29 +1214,16 @@ def _osmnx_fetch_buildings_safe(
 
             _safe_twrite("osm", attempt=i, endpoint=ep, client_timeout_s=t_client)
 
-            # Run the blocking OSMnx call in a worker with a client timeout.
-            # Do not use the executor as a context manager here: its __exit__
-            # waits for a running worker even after fut.result() times out.
-            ex = ThreadPoolExecutor(max_workers=1)
-            fut = ex.submit(
-                _osmnx_fetch_buildings_core,
+            # The outer Streamlit-facing helper owns the only asynchronous
+            # boundary. OSMnx performs the blocking request synchronously here
+            # and its own requests timeout governs genuine network failure.
+            g = _osmnx_fetch_buildings_core(
                 north,
                 south,
                 east,
                 west,
                 tags,
             )
-            try:
-                g = fut.result(timeout=t_client)
-            except FuturesTimeout:
-                fut.cancel()
-                ex.shutdown(wait=False, cancel_futures=True)
-                raise
-            except Exception:
-                ex.shutdown(wait=True)
-                raise
-            else:
-                ex.shutdown(wait=True)
 
             if g is None or getattr(g, "empty", True):
                 # Treat None/empty as non-fatal; try next endpoint
@@ -1251,10 +1235,6 @@ def _osmnx_fetch_buildings_safe(
             _safe_twrite("osm", attempt=i, endpoint=ep, ok=True, rows=int(len(g)))
             return g, ep
 
-        except FuturesTimeout:
-            _safe_twrite("osm", attempt=i, endpoint=ep, timeout=True)
-            logger.warning("Overpass client timeout on %s (attempt %d)", ep, i)
-            continue
         except (Timeout, ReqConnError) as e:
             _safe_twrite("osm", attempt=i, endpoint=ep, error=type(e).__name__)
             logger.warning("Overpass error %s on %s (attempt %d)", type(e).__name__, ep, i)

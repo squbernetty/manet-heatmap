@@ -8,7 +8,6 @@ from collections.abc import Callable
 from concurrent.futures import ThreadPoolExecutor
 from concurrent.futures import TimeoutError as FuturesTimeout
 from pathlib import Path
-from unittest.mock import patch
 from types import SimpleNamespace
 from typing import cast
 
@@ -117,86 +116,51 @@ class OSMnxCompatibilityTests(unittest.TestCase):
         self.assertNotIn("timeout", settings.requests_kwargs)
         self.assertFalse(settings.requests_kwargs["verify"])
 
-    def test_inner_overpass_timeout_does_not_wait_for_worker_shutdown(self):
-        class _EmptyResult:
-            empty = True
+    def test_inner_overpass_fetch_has_no_nested_executor(self):
+        src = SOURCE.read_text(encoding="utf-8")
+        tree = ast.parse(src, filename=str(SOURCE))
 
-            def __len__(self):
-                return 0
+        target = None
+        for node in tree.body:
+            if (
+                isinstance(node, ast.FunctionDef)
+                and node.name == "_osmnx_fetch_buildings_safe"
+            ):
+                target = node
+                break
 
-        shutdown_calls = []
-
-        class _TimedOutFuture:
-            def result(self, timeout=None):
-                raise FuturesTimeout()
-
-            def cancel(self):
-                return False
-
-        class _BlockingExitExecutor:
-            def __init__(self, max_workers=1):
-                self.max_workers = max_workers
-
-            def submit(self, fn, *args, **kwargs):
-                return _TimedOutFuture()
-
-            def shutdown(self, wait=True, cancel_futures=False):
-                shutdown_calls.append((wait, cancel_futures))
-                if wait:
-                    time.sleep(1.0)
-
-            def __enter__(self):
-                return self
-
-            def __exit__(self, exc_type, exc, tb):
-                self.shutdown(wait=True)
-                return False
-
-        settings = SimpleNamespace(
-            overpass_endpoint="https://overpass-api.de/api/interpreter",
-            requests_kwargs={},
-        )
-        fake_ox = SimpleNamespace(settings=settings)
-        ns = _load_osmnx_functions(fake_ox)
-
-        ns["_safe_twrite"] = lambda *args, **kwargs: None
-        ns["logger"] = logging.getLogger("test.osmnx.inner-timeout")
-        ns["gpd"] = SimpleNamespace(
-            GeoDataFrame=lambda *args, **kwargs: _EmptyResult()
+        self.assertIsNotNone(
+            target,
+            "_osmnx_fetch_buildings_safe not found in production source",
         )
 
-        t0 = time.perf_counter()
+        executor_refs = [
+            node.lineno
+            for node in ast.walk(target)
+            if isinstance(node, ast.Name)
+            and node.id == "ThreadPoolExecutor"
+        ]
 
-        with patch(
-            "concurrent.futures.ThreadPoolExecutor",
-            _BlockingExitExecutor,
-        ):
-            result, endpoint = ns["_osmnx_fetch_buildings_safe"](
-                north=59.46,
-                south=59.41,
-                east=24.81,
-                west=24.70,
-                tags={"building": True},
-                timeout_s=3,
-                endpoints=["https://overpass-api.de/api/interpreter"],
-            )
-
-        elapsed = time.perf_counter() - t0
-
-        self.assertTrue(result.empty)
-        self.assertEqual(endpoint, "OverpassFetchFailed")
-
-        self.assertLess(
-            elapsed,
-            0.60,
-            f"Inner timeout waited for executor shutdown: {elapsed:.3f}s",
+        self.assertEqual(
+            executor_refs,
+            [],
+            "Inner OSM fetch still creates a nested ThreadPoolExecutor",
         )
 
-        self.assertIn(
-            (False, True),
-            shutdown_calls,
-            "Timed-out inner executor was not shut down with wait=False",
+        direct_core_calls = [
+            node
+            for node in ast.walk(target)
+            if isinstance(node, ast.Call)
+            and isinstance(node.func, ast.Name)
+            and node.func.id == "_osmnx_fetch_buildings_core"
+        ]
+
+        self.assertGreaterEqual(
+            len(direct_core_calls),
+            1,
+            "_osmnx_fetch_buildings_safe must call the core fetch synchronously",
         )
+
 
     def test_osm_ui_cap_enforces_single_flight_across_reruns(self):
         class _EmptyResult:
