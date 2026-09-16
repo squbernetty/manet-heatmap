@@ -1446,13 +1446,17 @@ def _fetch_osm_bbox_with_ui_cap(
         except Exception:
             res_holder["gdf"] = gpd.GeoDataFrame(geometry=[], crs="EPSG:4326")
 
-    with ThreadPoolExecutor(max_workers=1) as ex:
-        fut = ex.submit(_runner)
-        try:
-            fut.result(timeout=float(max(1.0, ui_wait_s)))
-        except FuturesTimeout:
-            _safe_twrite("osm", ui_wait_timeout=True, cap_s=float(ui_wait_s))
-            return gpd.GeoDataFrame(geometry=[], crs="EPSG:4326")
+    ex = ThreadPoolExecutor(max_workers=1)
+    fut = ex.submit(_runner)
+    try:
+        fut.result(timeout=float(max(1.0, ui_wait_s)))
+    except FuturesTimeout:
+        _safe_twrite("osm", ui_wait_timeout=True, cap_s=float(ui_wait_s))
+        fut.cancel()
+        ex.shutdown(wait=False, cancel_futures=True)
+        return gpd.GeoDataFrame(geometry=[], crs="EPSG:4326")
+    else:
+        ex.shutdown(wait=True)
 
     return res_holder.get("gdf", gpd.GeoDataFrame(geometry=[], crs="EPSG:4326"))
 

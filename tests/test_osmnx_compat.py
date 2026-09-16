@@ -2,8 +2,11 @@ from __future__ import annotations
 
 import ast
 import logging
+import time
 import unittest
 from collections.abc import Callable
+from concurrent.futures import ThreadPoolExecutor
+from concurrent.futures import TimeoutError as FuturesTimeout
 from pathlib import Path
 from types import SimpleNamespace
 from typing import cast
@@ -13,6 +16,7 @@ SOURCE = Path(__file__).resolve().parents[1] / "manet_heatmap_appV23.py"
 
 FUNCTION_NAMES = {
     "configure_osmnx",
+    "_fetch_osm_bbox_with_ui_cap",
     "_osmnx_set_timeout",
     "_osmnx_fetch_buildings_core",
     "_osmnx_fetch_buildings_safe",
@@ -68,6 +72,8 @@ def _load_osmnx_functions(fake_ox):
         "APP_NAME": "manet_heatmap",
         "SESSION_ID": "test-session",
         "Path": Path,
+        "ThreadPoolExecutor": ThreadPoolExecutor,
+        "FuturesTimeout": FuturesTimeout,
         "ox": fake_ox,
         "gpd": SimpleNamespace(GeoDataFrame=object),
         "Callable": Callable,
@@ -107,6 +113,40 @@ class OSMnxCompatibilityTests(unittest.TestCase):
         self.assertEqual(settings.requests_timeout, (120, 120))
         self.assertNotIn("timeout", settings.requests_kwargs)
         self.assertFalse(settings.requests_kwargs["verify"])
+
+    def test_osm_ui_wait_cap_bounds_wall_clock_time(self):
+        class _EmptyGDF:
+            empty = True
+
+        fake_ox = SimpleNamespace(settings=SimpleNamespace())
+        ns = _load_osmnx_functions(fake_ox)
+
+        def slow_fetch(lat_s, lat_n, lon_w, lon_e):
+            time.sleep(1.6)
+            return _EmptyGDF()
+
+        # Replace all external/network behavior with deterministic local fakes.
+        ns["fetch_osm_buildings_bbox"] = slow_fetch
+        ns["gpd"] = SimpleNamespace(
+            GeoDataFrame=lambda *args, **kwargs: _EmptyGDF()
+        )
+
+        t0 = time.perf_counter()
+        result = ns["_fetch_osm_bbox_with_ui_cap"](
+            bbox=(59.41, 59.46, 24.70, 24.81),
+            ui_wait_s=1.0,
+        )
+        elapsed = time.perf_counter() - t0
+
+        self.assertTrue(result.empty)
+
+        # Allow scheduling tolerance, but the caller must return materially
+        # before the 1.6 s worker itself finishes.
+        self.assertLess(
+            elapsed,
+            1.30,
+            f"UI wait cap did not bound wall-clock time: {elapsed:.3f}s",
+        )
 
     def test_features_from_bbox_uses_v2_bbox_contract_directly(self):
         calls = []
