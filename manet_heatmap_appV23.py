@@ -1337,19 +1337,22 @@ def fetch_osm_buildings_bbox(
 
     t0 = time.perf_counter()
     t_fetch = time.perf_counter()
-    g, err = _osmnx_fetch_buildings_safe(
+    g, endpoint_or_error = _osmnx_fetch_buildings_safe(
         north, south, east, west, tags, timeout_s=osm_timeout_s, endpoints=_OVERPASS_POOL
     )
     fetch_dt = round(time.perf_counter() - t_fetch, 3)
     raw_rows = 0 if g is None else int(len(g))
     logger.info("OSM fetch completed in %.3fs; raw rows=%d", fetch_dt, raw_rows)
-    if err is not None:
+
+    if endpoint_or_error == "OverpassFetchFailed":
         logger.warning(
             "Overpass fetch failed (%s); skipping building attenuation for this run.",
-            err,
+            endpoint_or_error,
         )
         if skip_if_slow:
             return gpd.GeoDataFrame(geometry=[], crs="EPSG:4326")
+    elif endpoint_or_error is not None:
+        logger.info("Overpass succeeded via %s", endpoint_or_error)
 
     if g is None or g.empty:
         return gpd.GeoDataFrame(geometry=[], crs="EPSG:4326")

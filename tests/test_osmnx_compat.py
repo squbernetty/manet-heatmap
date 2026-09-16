@@ -19,6 +19,7 @@ FUNCTION_NAMES = {
     "_fetch_osm_bbox_with_ui_cap",
     "_fetch_buildings_with_shrink",
     "get_osm_buildings_local_or_remote",
+    "fetch_osm_buildings_bbox",
     "_osmnx_set_timeout",
     "_osmnx_fetch_buildings_core",
     "_osmnx_fetch_buildings_safe",
@@ -115,6 +116,71 @@ class OSMnxCompatibilityTests(unittest.TestCase):
         self.assertEqual(settings.requests_timeout, (120, 120))
         self.assertNotIn("timeout", settings.requests_kwargs)
         self.assertFalse(settings.requests_kwargs["verify"])
+
+    def test_successful_overpass_fetch_keeps_buildings(self):
+        class _GeomTypes:
+            def isin(self, values):
+                return [True]
+
+        class _RawResult:
+            empty = False
+            geom_type = _GeomTypes()
+
+            def __len__(self):
+                return 1
+
+            def __getitem__(self, key):
+                return self
+
+        class _CleanResult:
+            empty = False
+
+            def __len__(self):
+                return 1
+
+        class _EmptyResult:
+            empty = True
+
+            def __len__(self):
+                return 0
+
+        fake_ox = SimpleNamespace(settings=SimpleNamespace())
+        ns = _load_osmnx_functions(fake_ox)
+
+        raw_result = _RawResult()
+        clean_result = _CleanResult()
+
+        ns["_osmnx_set_timeout"] = lambda *args, **kwargs: None
+        ns["_osmnx_fetch_buildings_safe"] = (
+            lambda *args, **kwargs: (
+                raw_result,
+                "https://overpass.kumi.systems/api/interpreter",
+            )
+        )
+        ns["_clean_buildings_4326"] = lambda g: clean_result
+        ns["_OVERPASS_POOL"] = [
+            "https://overpass.kumi.systems/api/interpreter"
+        ]
+        ns["logger"] = logging.getLogger("test.osmnx.success-contract")
+        ns["time"] = time
+        ns["gpd"] = SimpleNamespace(
+            GeoDataFrame=lambda *args, **kwargs: _EmptyResult()
+        )
+
+        result = ns["fetch_osm_buildings_bbox"](
+            lat_s=59.428198,
+            lat_n=59.446286,
+            lon_w=24.739603,
+            lon_e=24.774936,
+            osm_timeout_s=30,
+            skip_if_slow=True,
+        )
+
+        self.assertIs(
+            result,
+            clean_result,
+            "A successful Overpass result was discarded because its working endpoint was treated as an error",
+        )
 
     def test_background_osm_worker_is_streamlit_free(self):
         src = SOURCE.read_text(encoding="utf-8")
