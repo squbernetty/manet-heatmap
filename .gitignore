@@ -10,3 +10,6 @@ __pycache__/
 
 # Runtime logs
 debugging.txt
+
+# Generated OSMnx HTTP cache
+data/osmnx_cache/
