@@ -1455,29 +1455,84 @@ with st.sidebar.expander("OSM Buildings Source", expanded=False):
 def _fetch_osm_bbox_with_ui_cap(
     bbox: tuple[float, float, float, float], ui_wait_s: float
 ) -> gpd.GeoDataFrame:
-    """Run fetch_osm_buildings_bbox in a worker thread; return empty if the UI cap elapses."""
+    """Run at most one OSM fetch per Streamlit session and bound UI wait time."""
+    state_key = "_osm_fetch_inflight"
+
+    def _empty() -> gpd.GeoDataFrame:
+        return gpd.GeoDataFrame(geometry=[], crs="EPSG:4326")
+
+    # Reuse or defer an existing request rather than starting overlapping
+    # Overpass workers across Streamlit reruns or shrink retries.
+    active = st.session_state.get(state_key)
+    if active is not None:
+        active_future = active.get("future")
+
+        if active_future is not None and not active_future.done():
+            _safe_twrite(
+                "osm",
+                single_flight_busy=True,
+                active_bbox=active.get("bbox"),
+                requested_bbox=bbox,
+            )
+            return _empty()
+
+        # The prior worker has finished. Remove its in-flight marker.
+        st.session_state.pop(state_key, None)
+
+        # If it completed for the same bbox, harvest the result instead of
+        # launching an identical Overpass request.
+        if active_future is not None and active.get("bbox") == bbox:
+            try:
+                active_future.result(timeout=0)
+            except Exception:
+                pass
+
+            _safe_twrite("osm", single_flight_harvest=True, bbox=bbox)
+            return active.get("res_holder", {}).get("gdf", _empty())
+
     lat_s, lat_n, lon_w, lon_e = bbox
     res_holder: dict[str, gpd.GeoDataFrame] = {}
 
     def _runner():
         try:
-            res_holder["gdf"] = fetch_osm_buildings_bbox(lat_s, lat_n, lon_w, lon_e)
+            res_holder["gdf"] = fetch_osm_buildings_bbox(
+                lat_s, lat_n, lon_w, lon_e
+            )
         except Exception:
-            res_holder["gdf"] = gpd.GeoDataFrame(geometry=[], crs="EPSG:4326")
+            res_holder["gdf"] = _empty()
 
     ex = ThreadPoolExecutor(max_workers=1)
     fut = ex.submit(_runner)
+
+    st.session_state[state_key] = {
+        "bbox": bbox,
+        "future": fut,
+        "res_holder": res_holder,
+    }
+
     try:
         fut.result(timeout=float(max(1.0, ui_wait_s)))
     except FuturesTimeout:
         _safe_twrite("osm", ui_wait_timeout=True, cap_s=float(ui_wait_s))
-        fut.cancel()
+
+        cancelled = fut.cancel()
         ex.shutdown(wait=False, cancel_futures=True)
-        return gpd.GeoDataFrame(geometry=[], crs="EPSG:4326")
+
+        # If cancellation succeeded, no worker remains in-flight.
+        if cancelled:
+            st.session_state.pop(state_key, None)
+
+        return _empty()
+    except Exception:
+        ex.shutdown(wait=True)
+        st.session_state.pop(state_key, None)
+        return _empty()
     else:
         ex.shutdown(wait=True)
+        st.session_state.pop(state_key, None)
 
-    return res_holder.get("gdf", gpd.GeoDataFrame(geometry=[], crs="EPSG:4326"))
+    return res_holder.get("gdf", _empty())
+
 
 
 def _fetch_buildings_with_shrink(

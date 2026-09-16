@@ -198,12 +198,73 @@ class OSMnxCompatibilityTests(unittest.TestCase):
             "Timed-out inner executor was not shut down with wait=False",
         )
 
+    def test_osm_ui_cap_enforces_single_flight_across_reruns(self):
+        class _EmptyResult:
+            empty = True
+
+            def __len__(self):
+                return 0
+
+        submissions = []
+        shared_future = None
+
+        class _StillRunningFuture:
+            def result(self, timeout=None):
+                raise FuturesTimeout()
+
+            def cancel(self):
+                # Simulate a worker that has already started and therefore
+                # cannot be cancelled by Future.cancel().
+                return False
+
+            def done(self):
+                return False
+
+        shared_future = _StillRunningFuture()
+
+        class _CountingExecutor:
+            def __init__(self, max_workers=1):
+                self.max_workers = max_workers
+
+            def submit(self, fn, *args, **kwargs):
+                submissions.append((fn, args, kwargs))
+                return shared_future
+
+            def shutdown(self, wait=True, cancel_futures=False):
+                return None
+
+        fake_ox = SimpleNamespace(settings=SimpleNamespace())
+        ns = _load_osmnx_functions(fake_ox)
+
+        ns["ThreadPoolExecutor"] = _CountingExecutor
+        ns["_safe_twrite"] = lambda *args, **kwargs: None
+        ns["fetch_osm_buildings_bbox"] = lambda *args, **kwargs: _EmptyResult()
+        ns["gpd"] = SimpleNamespace(
+            GeoDataFrame=lambda *args, **kwargs: _EmptyResult()
+        )
+        ns["st"] = SimpleNamespace(session_state={})
+
+        bbox = (59.41, 59.46, 24.70, 24.81)
+
+        first = ns["_fetch_osm_bbox_with_ui_cap"](bbox, 1.0)
+        second = ns["_fetch_osm_bbox_with_ui_cap"](bbox, 1.0)
+
+        self.assertTrue(first.empty)
+        self.assertTrue(second.empty)
+
+        self.assertEqual(
+            len(submissions),
+            1,
+            "A second OSM worker was submitted while the first was still in-flight",
+        )
+
     def test_osm_ui_wait_cap_bounds_wall_clock_time(self):
         class _EmptyGDF:
             empty = True
 
         fake_ox = SimpleNamespace(settings=SimpleNamespace())
         ns = _load_osmnx_functions(fake_ox)
+        ns["st"] = SimpleNamespace(session_state={})
 
         def slow_fetch(lat_s, lat_n, lon_w, lon_e):
             time.sleep(1.6)
