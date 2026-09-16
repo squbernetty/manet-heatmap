@@ -1135,7 +1135,10 @@ def _osmnx_set_timeout(timeout_s: int) -> None:
     try:
         ox.settings.use_cache = True
         ox.settings.overpass_settings = f"[out:json][timeout:{int(timeout_s)}]"
-        ox.settings.requests_kwargs = {"timeout": int(timeout_s)}
+        ox.settings.requests_timeout = int(timeout_s)
+        request_kwargs = dict(getattr(ox.settings, "requests_kwargs", {}) or {})
+        request_kwargs.pop("timeout", None)
+        ox.settings.requests_kwargs = request_kwargs
         ox.settings.overpass_rate_limit = True
     except Exception:
         logger.debug("Could not set OSMnx overpass settings", exc_info=True)
@@ -1146,13 +1149,12 @@ def _osmnx_fetch_buildings_core(
 ) -> gpd.GeoDataFrame:
     if hasattr(ox, "geometries_from_bbox"):
         return ox.geometries_from_bbox(north, south, east, west, tags)
+
+    # OSMnx 2.x expects bbox=(left, bottom, right, top).
     feat_fn: Callable[..., gpd.GeoDataFrame] = cast(
         Callable[..., gpd.GeoDataFrame], ox.features_from_bbox
     )
-    try:
-        return feat_fn(north, south, east, west, tags)  # osmnx ≥ 2.x
-    except TypeError:
-        return feat_fn((north, south, east, west), tags)  # osmnx 1.x
+    return feat_fn((west, south, east, north), tags)
 
 
 def _osmnx_fetch_buildings_safe(
@@ -1195,9 +1197,21 @@ def _osmnx_fetch_buildings_safe(
         try:
             # Configure endpoint + server/client-side timeouts for this attempt
             try:
-                ox.settings.overpass_endpoint = ep  # type: ignore[attr-defined]
+                # OSMnx 2.x expects a base Overpass URL and appends
+                # "/interpreter" itself.
+                base_url = ep.rstrip("/")
+                if base_url.endswith("/interpreter"):
+                    base_url = base_url[: -len("/interpreter")]
+
+                ox.settings.overpass_url = base_url
                 ox.settings.overpass_settings = f"[out:json][timeout:{t_client}]"
-                ox.settings.requests_kwargs = {"timeout": t_client}
+                ox.settings.requests_timeout = t_client
+
+                request_kwargs = dict(
+                    getattr(ox.settings, "requests_kwargs", {}) or {}
+                )
+                request_kwargs.pop("timeout", None)
+                ox.settings.requests_kwargs = request_kwargs
                 ox.settings.overpass_rate_limit = True
             except Exception:
                 # Non-fatal; continue with defaults
