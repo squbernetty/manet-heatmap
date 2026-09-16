@@ -1533,8 +1533,8 @@ def get_osm_buildings_local_or_remote(
             return gpd.GeoDataFrame(geometry=[], crs="EPSG:4326")
 
     # Remote fetch
-    lat_s, lat_n, lon_w, lon_e = bbox
-    b_remote = fetch_osm_buildings_bbox(lat_s, lat_n, lon_w, lon_e)
+    ui_wait_s = float(st.session_state.get("osm_ui_wait_cap_s", 20))
+    b_remote = _fetch_osm_bbox_with_ui_cap(bbox, ui_wait_s)
     _safe_twrite("osm", source="overpass", fetched=int(len(b_remote)))
 
     if save_after_fetch and not b_remote.empty:

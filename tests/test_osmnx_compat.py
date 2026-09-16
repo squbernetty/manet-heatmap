@@ -17,6 +17,7 @@ SOURCE = Path(__file__).resolve().parents[1] / "manet_heatmap_appV23.py"
 FUNCTION_NAMES = {
     "configure_osmnx",
     "_fetch_osm_bbox_with_ui_cap",
+    "get_osm_buildings_local_or_remote",
     "_osmnx_set_timeout",
     "_osmnx_fetch_buildings_core",
     "_osmnx_fetch_buildings_safe",
@@ -147,6 +148,55 @@ class OSMnxCompatibilityTests(unittest.TestCase):
             1.30,
             f"UI wait cap did not bound wall-clock time: {elapsed:.3f}s",
         )
+
+    def test_remote_orchestration_uses_ui_capped_fetch(self):
+        bbox = (59.41, 59.46, 24.70, 24.81)
+
+        fake_ox = SimpleNamespace(settings=SimpleNamespace())
+        ns = _load_osmnx_functions(fake_ox)
+
+        raw_calls = []
+        bounded_calls = []
+
+        raw_result = _DummyResult()
+        bounded_result = _DummyResult()
+
+        def raw_fetch(lat_s, lat_n, lon_w, lon_e):
+            raw_calls.append((lat_s, lat_n, lon_w, lon_e))
+            return raw_result
+
+        def bounded_fetch(actual_bbox, ui_wait_s):
+            bounded_calls.append((actual_bbox, ui_wait_s))
+            return bounded_result
+
+        ns["fetch_osm_buildings_bbox"] = raw_fetch
+        ns["_fetch_osm_bbox_with_ui_cap"] = bounded_fetch
+        ns["_osm_local_path"] = lambda *args, **kwargs: Path("unused.gpkg")
+        ns["_safe_twrite"] = lambda *args, **kwargs: None
+        ns["st"] = SimpleNamespace(
+            session_state={"osm_ui_wait_cap_s": 7.0}
+        )
+        ns["logger"] = logging.getLogger("test.osmnx.remote")
+
+        result = ns["get_osm_buildings_local_or_remote"](
+            city_label="Tallinn",
+            bbox=bbox,
+            radius_km=3.0,
+            source_mode="Overpass only",
+            save_after_fetch=False,
+        )
+
+        self.assertEqual(
+            raw_calls,
+            [],
+            "Remote orchestration bypassed the UI-capped fetch helper",
+        )
+        self.assertEqual(
+            bounded_calls,
+            [(bbox, 7.0)],
+            "Remote orchestration did not use the configured UI wait cap",
+        )
+        self.assertIs(result, bounded_result)
 
     def test_features_from_bbox_uses_v2_bbox_contract_directly(self):
         calls = []
