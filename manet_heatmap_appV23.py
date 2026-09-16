@@ -1493,9 +1493,9 @@ def _fetch_buildings_with_shrink(
             continue
         inner_bbox = _shrink_bbox(bbox, r)
         _safe_twrite("osm", shrink_ratio=float(r))
-        # Direct remote fetch
-        lat_s, lat_n, lon_w, lon_e = inner_bbox
-        g_remote = fetch_osm_buildings_bbox(lat_s, lat_n, lon_w, lon_e)
+        # Direct remote fetch, bounded by the configured UI wait cap.
+        ui_wait_s = float(st.session_state.get("osm_ui_wait_cap_s", 20))
+        g_remote = _fetch_osm_bbox_with_ui_cap(inner_bbox, ui_wait_s)
         if g_remote is not None and not g_remote.empty:
             if save_after_fetch:
                 # Save under the inner bbox path for reuse

@@ -17,6 +17,7 @@ SOURCE = Path(__file__).resolve().parents[1] / "manet_heatmap_appV23.py"
 FUNCTION_NAMES = {
     "configure_osmnx",
     "_fetch_osm_bbox_with_ui_cap",
+    "_fetch_buildings_with_shrink",
     "get_osm_buildings_local_or_remote",
     "_osmnx_set_timeout",
     "_osmnx_fetch_buildings_core",
@@ -195,6 +196,69 @@ class OSMnxCompatibilityTests(unittest.TestCase):
             bounded_calls,
             [(bbox, 7.0)],
             "Remote orchestration did not use the configured UI wait cap",
+        )
+        self.assertIs(result, bounded_result)
+
+    def test_shrink_retry_uses_ui_capped_fetch(self):
+        class _EmptyResult:
+            empty = True
+
+            def __len__(self):
+                return 0
+
+        bbox = (59.41, 59.46, 24.70, 24.81)
+        inner_bbox = (59.415, 59.455, 24.71, 24.80)
+
+        fake_ox = SimpleNamespace(settings=SimpleNamespace())
+        ns = _load_osmnx_functions(fake_ox)
+
+        raw_calls = []
+        bounded_calls = []
+
+        bounded_result = _DummyResult()
+
+        def raw_fetch(lat_s, lat_n, lon_w, lon_e):
+            raw_calls.append((lat_s, lat_n, lon_w, lon_e))
+            return bounded_result
+
+        def bounded_fetch(actual_bbox, ui_wait_s):
+            bounded_calls.append((actual_bbox, ui_wait_s))
+            return bounded_result
+
+        ns["get_osm_buildings_local_or_remote"] = (
+            lambda *args, **kwargs: _EmptyResult()
+        )
+        ns["_shrink_bbox"] = lambda actual_bbox, ratio: inner_bbox
+        ns["fetch_osm_buildings_bbox"] = raw_fetch
+        ns["_fetch_osm_bbox_with_ui_cap"] = bounded_fetch
+        ns["_safe_twrite"] = lambda *args, **kwargs: None
+        ns["gpd"] = SimpleNamespace(
+            GeoDataFrame=lambda *args, **kwargs: _EmptyResult()
+        )
+        ns["st"] = SimpleNamespace(
+            session_state={"osm_ui_wait_cap_s": 7.0},
+            caption=lambda *args, **kwargs: None,
+        )
+
+        result = ns["_fetch_buildings_with_shrink"](
+            bbox=bbox,
+            radius_km=1.0,
+            auto_shrink=True,
+            max_aoi_km=3.0,
+            source_mode="Overpass only",
+            save_after_fetch=False,
+            city_label="Tallinn",
+        )
+
+        self.assertEqual(
+            raw_calls,
+            [],
+            "Shrink retry bypassed the UI-capped fetch helper",
+        )
+        self.assertEqual(
+            bounded_calls,
+            [(inner_bbox, 7.0)],
+            "Shrink retry did not use the configured UI wait cap",
         )
         self.assertIs(result, bounded_result)
 
