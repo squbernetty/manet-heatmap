@@ -1541,10 +1541,24 @@ def _fetch_buildings_with_shrink(
         g_remote = _fetch_osm_bbox_with_ui_cap(inner_bbox, ui_wait_s)
         if g_remote is not None and not g_remote.empty:
             if save_after_fetch:
-                # Save under the inner bbox path for reuse
+                # Save under the inner bbox path for reuse. Persistence is
+                # optional; a write failure must not discard fetched data.
                 fp = _osm_local_path(city_label, inner_bbox, radius_km * r)
-                out_fp = _save_local_buildings(g_remote, fp)
-                _safe_twrite("osm", saved_path=str(out_fp), shrink_saved=True)
+                try:
+                    out_fp = _save_local_buildings(g_remote, fp)
+                    _safe_twrite("osm", saved_path=str(out_fp), shrink_saved=True)
+                except Exception as e:
+                    logger.warning(
+                        "Failed to persist shrunken OSM buildings after successful "
+                        "Overpass fetch; continuing with in-memory data: %s",
+                        e,
+                    )
+                    _safe_twrite(
+                        "osm",
+                        persistence_failed=True,
+                        persistence_error_type=type(e).__name__,
+                        shrink_ratio=float(r),
+                    )
             # Inform the user we shrunk
             st.caption(
                 f"OSM buildings fetched with smaller AOI ratio {r:.2f} due to Overpass limits."
@@ -1581,8 +1595,20 @@ def get_osm_buildings_local_or_remote(
     _safe_twrite("osm", source="overpass", fetched=int(len(b_remote)))
 
     if save_after_fetch and not b_remote.empty:
-        out_fp = _save_local_buildings(b_remote, fp)
-        _safe_twrite("osm", saved_path=str(out_fp))
+        try:
+            out_fp = _save_local_buildings(b_remote, fp)
+            _safe_twrite("osm", saved_path=str(out_fp))
+        except Exception as e:
+            logger.warning(
+                "Failed to persist OSM buildings after successful Overpass fetch; "
+                "continuing with in-memory data: %s",
+                e,
+            )
+            _safe_twrite(
+                "osm",
+                persistence_failed=True,
+                persistence_error_type=type(e).__name__,
+            )
 
     return b_remote
 

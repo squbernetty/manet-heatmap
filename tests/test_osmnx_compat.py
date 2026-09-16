@@ -417,6 +417,59 @@ class OSMnxCompatibilityTests(unittest.TestCase):
         )
         self.assertIs(result, bounded_result)
 
+    def test_remote_persistence_failure_keeps_fetched_buildings(self):
+        bbox = (59.41, 59.46, 24.70, 24.81)
+
+        fake_ox = SimpleNamespace(settings=SimpleNamespace())
+        ns = _load_osmnx_functions(fake_ox)
+
+        fetched = _DummyResult()
+        telemetry = []
+
+        ns["_fetch_osm_bbox_with_ui_cap"] = (
+            lambda actual_bbox, ui_wait_s: fetched
+        )
+        ns["_osm_local_path"] = (
+            lambda *args, **kwargs: Path("buildings.gpkg")
+        )
+
+        def fail_save(*args, **kwargs):
+            raise OSError("simulated persistence failure")
+
+        ns["_save_local_buildings"] = fail_save
+        ns["_safe_twrite"] = (
+            lambda section, **kv: telemetry.append((section, kv))
+        )
+        ns["st"] = SimpleNamespace(
+            session_state={"osm_ui_wait_cap_s": 7.0}
+        )
+        ns["logger"] = logging.getLogger(
+            "test.osmnx.persistence.remote"
+        )
+
+        result = ns["get_osm_buildings_local_or_remote"](
+            city_label="Tallinn",
+            bbox=bbox,
+            radius_km=3.0,
+            source_mode="Overpass only",
+            save_after_fetch=True,
+        )
+
+        self.assertIs(
+            result,
+            fetched,
+            "Persistence failure discarded a successful Overpass result",
+        )
+        self.assertTrue(
+            any(
+                section == "osm"
+                and data.get("persistence_failed") is True
+                and data.get("persistence_error_type") == "OSError"
+                for section, data in telemetry
+            ),
+            "Persistence failure was not recorded through safe telemetry",
+        )
+
     def test_shrink_retry_uses_ui_capped_fetch(self):
         class _EmptyResult:
             empty = True
@@ -479,6 +532,77 @@ class OSMnxCompatibilityTests(unittest.TestCase):
             "Shrink retry did not use the configured UI wait cap",
         )
         self.assertIs(result, bounded_result)
+
+    def test_shrink_persistence_failure_keeps_fetched_buildings(self):
+        class _EmptyResult:
+            empty = True
+
+            def __len__(self):
+                return 0
+
+        bbox = (59.41, 59.46, 24.70, 24.81)
+        inner_bbox = (59.415, 59.455, 24.71, 24.80)
+
+        fake_ox = SimpleNamespace(settings=SimpleNamespace())
+        ns = _load_osmnx_functions(fake_ox)
+
+        fetched = _DummyResult()
+        telemetry = []
+
+        ns["get_osm_buildings_local_or_remote"] = (
+            lambda *args, **kwargs: _EmptyResult()
+        )
+        ns["_shrink_bbox"] = lambda actual_bbox, ratio: inner_bbox
+        ns["_fetch_osm_bbox_with_ui_cap"] = (
+            lambda actual_bbox, ui_wait_s: fetched
+        )
+        ns["_osm_local_path"] = (
+            lambda *args, **kwargs: Path("buildings-shrink.gpkg")
+        )
+
+        def fail_save(*args, **kwargs):
+            raise OSError("simulated persistence failure")
+
+        ns["_save_local_buildings"] = fail_save
+        ns["_safe_twrite"] = (
+            lambda section, **kv: telemetry.append((section, kv))
+        )
+        ns["gpd"] = SimpleNamespace(
+            GeoDataFrame=lambda *args, **kwargs: _EmptyResult()
+        )
+        ns["st"] = SimpleNamespace(
+            session_state={"osm_ui_wait_cap_s": 7.0},
+            caption=lambda *args, **kwargs: None,
+        )
+        ns["logger"] = logging.getLogger(
+            "test.osmnx.persistence.shrink"
+        )
+
+        result = ns["_fetch_buildings_with_shrink"](
+            bbox=bbox,
+            radius_km=1.0,
+            auto_shrink=True,
+            max_aoi_km=3.0,
+            source_mode="Overpass only",
+            save_after_fetch=True,
+            city_label="Tallinn",
+        )
+
+        self.assertIs(
+            result,
+            fetched,
+            "Persistence failure discarded a successful shrunken Overpass result",
+        )
+        self.assertTrue(
+            any(
+                section == "osm"
+                and data.get("persistence_failed") is True
+                and data.get("persistence_error_type") == "OSError"
+                and data.get("shrink_ratio") == 0.9
+                for section, data in telemetry
+            ),
+            "Shrink persistence failure was not recorded through safe telemetry",
+        )
 
     def test_features_from_bbox_uses_v2_bbox_contract_directly(self):
         calls = []
