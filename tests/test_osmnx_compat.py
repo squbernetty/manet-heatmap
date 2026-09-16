@@ -8,6 +8,7 @@ from collections.abc import Callable
 from concurrent.futures import ThreadPoolExecutor
 from concurrent.futures import TimeoutError as FuturesTimeout
 from pathlib import Path
+from unittest.mock import patch
 from types import SimpleNamespace
 from typing import cast
 
@@ -115,6 +116,87 @@ class OSMnxCompatibilityTests(unittest.TestCase):
         self.assertEqual(settings.requests_timeout, (120, 120))
         self.assertNotIn("timeout", settings.requests_kwargs)
         self.assertFalse(settings.requests_kwargs["verify"])
+
+    def test_inner_overpass_timeout_does_not_wait_for_worker_shutdown(self):
+        class _EmptyResult:
+            empty = True
+
+            def __len__(self):
+                return 0
+
+        shutdown_calls = []
+
+        class _TimedOutFuture:
+            def result(self, timeout=None):
+                raise FuturesTimeout()
+
+            def cancel(self):
+                return False
+
+        class _BlockingExitExecutor:
+            def __init__(self, max_workers=1):
+                self.max_workers = max_workers
+
+            def submit(self, fn, *args, **kwargs):
+                return _TimedOutFuture()
+
+            def shutdown(self, wait=True, cancel_futures=False):
+                shutdown_calls.append((wait, cancel_futures))
+                if wait:
+                    time.sleep(1.0)
+
+            def __enter__(self):
+                return self
+
+            def __exit__(self, exc_type, exc, tb):
+                self.shutdown(wait=True)
+                return False
+
+        settings = SimpleNamespace(
+            overpass_endpoint="https://overpass-api.de/api/interpreter",
+            requests_kwargs={},
+        )
+        fake_ox = SimpleNamespace(settings=settings)
+        ns = _load_osmnx_functions(fake_ox)
+
+        ns["_safe_twrite"] = lambda *args, **kwargs: None
+        ns["logger"] = logging.getLogger("test.osmnx.inner-timeout")
+        ns["gpd"] = SimpleNamespace(
+            GeoDataFrame=lambda *args, **kwargs: _EmptyResult()
+        )
+
+        t0 = time.perf_counter()
+
+        with patch(
+            "concurrent.futures.ThreadPoolExecutor",
+            _BlockingExitExecutor,
+        ):
+            result, endpoint = ns["_osmnx_fetch_buildings_safe"](
+                north=59.46,
+                south=59.41,
+                east=24.81,
+                west=24.70,
+                tags={"building": True},
+                timeout_s=3,
+                endpoints=["https://overpass-api.de/api/interpreter"],
+            )
+
+        elapsed = time.perf_counter() - t0
+
+        self.assertTrue(result.empty)
+        self.assertEqual(endpoint, "OverpassFetchFailed")
+
+        self.assertLess(
+            elapsed,
+            0.60,
+            f"Inner timeout waited for executor shutdown: {elapsed:.3f}s",
+        )
+
+        self.assertIn(
+            (False, True),
+            shutdown_calls,
+            "Timed-out inner executor was not shut down with wait=False",
+        )
 
     def test_osm_ui_wait_cap_bounds_wall_clock_time(self):
         class _EmptyGDF:

@@ -1217,10 +1217,29 @@ def _osmnx_fetch_buildings_safe(
 
             _safe_twrite("osm", attempt=i, endpoint=ep, client_timeout_s=t_client)
 
-            # Run the blocking OSMnx call in a worker with a client timeout
-            with ThreadPoolExecutor(max_workers=1) as ex:
-                fut = ex.submit(_osmnx_fetch_buildings_core, north, south, east, west, tags)
+            # Run the blocking OSMnx call in a worker with a client timeout.
+            # Do not use the executor as a context manager here: its __exit__
+            # waits for a running worker even after fut.result() times out.
+            ex = ThreadPoolExecutor(max_workers=1)
+            fut = ex.submit(
+                _osmnx_fetch_buildings_core,
+                north,
+                south,
+                east,
+                west,
+                tags,
+            )
+            try:
                 g = fut.result(timeout=t_client)
+            except FuturesTimeout:
+                fut.cancel()
+                ex.shutdown(wait=False, cancel_futures=True)
+                raise
+            except Exception:
+                ex.shutdown(wait=True)
+                raise
+            else:
+                ex.shutdown(wait=True)
 
             if g is None or getattr(g, "empty", True):
                 # Treat None/empty as non-fatal; try next endpoint
