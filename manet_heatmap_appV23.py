@@ -160,15 +160,13 @@ def configure_osmnx(logger: logging.Logger) -> None:
     ox.settings.cache_folder = str(cache_dir)
     ox.settings.log_console = False
 
-    # Start from existing kwargs but keep timeout; only strip headers if you want
+    # Start from existing kwargs while avoiding duplicate request arguments.
     rk = dict(getattr(ox.settings, "requests_kwargs", {}) or {})
-    # IMPORTANT: do NOT remove 'timeout' – OSMnx expects it to exist
-    # rk.pop("timeout", None)
-    rk.pop("headers", None)
 
-    # Ensure there is always a timeout key
-    if "timeout" not in rk or rk["timeout"] is None:
-        rk["timeout"] = 120  # seconds
+    # OSMnx supplies timeout=settings.requests_timeout explicitly.
+    # Keeping timeout in requests_kwargs would pass it twice to requests.
+    rk.pop("timeout", None)
+    rk.pop("headers", None)
 
     ox.settings.requests_kwargs = rk
 

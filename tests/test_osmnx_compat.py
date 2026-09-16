@@ -12,6 +12,7 @@ from typing import cast
 SOURCE = Path(__file__).resolve().parents[1] / "manet_heatmap_appV23.py"
 
 FUNCTION_NAMES = {
+    "configure_osmnx",
     "_osmnx_set_timeout",
     "_osmnx_fetch_buildings_core",
     "_osmnx_fetch_buildings_safe",
@@ -63,6 +64,10 @@ def _load_osmnx_functions(fake_ox):
 
     namespace = {
         "__name__": "_manet_osmnx_compat_test_extract",
+        "__file__": str(SOURCE),
+        "APP_NAME": "manet_heatmap",
+        "SESSION_ID": "test-session",
+        "Path": Path,
         "ox": fake_ox,
         "gpd": SimpleNamespace(GeoDataFrame=object),
         "Callable": Callable,
@@ -76,6 +81,33 @@ def _load_osmnx_functions(fake_ox):
 
 
 class OSMnxCompatibilityTests(unittest.TestCase):
+    def test_configure_osmnx_avoids_duplicate_timeout_kwarg(self):
+        settings = SimpleNamespace(
+            use_cache=False,
+            cache_folder="",
+            log_console=True,
+            requests_timeout=180,
+            requests_kwargs={
+                "timeout": 55,
+                "verify": False,
+                "headers": {"X-Test": "1"},
+            },
+            default_user_agent="OSMnx default",
+            max_query_area_size=1,
+        )
+
+        fake_ox = SimpleNamespace(
+            __version__="2.1.1",
+            settings=settings,
+        )
+        ns = _load_osmnx_functions(fake_ox)
+
+        ns["configure_osmnx"](logging.getLogger("test.osmnx.configure"))
+
+        self.assertEqual(settings.requests_timeout, (120, 120))
+        self.assertNotIn("timeout", settings.requests_kwargs)
+        self.assertFalse(settings.requests_kwargs["verify"])
+
     def test_features_from_bbox_uses_v2_bbox_contract_directly(self):
         calls = []
         result = _DummyResult()
