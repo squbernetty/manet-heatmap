@@ -116,6 +116,51 @@ class OSMnxCompatibilityTests(unittest.TestCase):
         self.assertNotIn("timeout", settings.requests_kwargs)
         self.assertFalse(settings.requests_kwargs["verify"])
 
+    def test_background_osm_worker_is_streamlit_free(self):
+        src = SOURCE.read_text(encoding="utf-8")
+        tree = ast.parse(src, filename=str(SOURCE))
+
+        worker_functions = {
+            "fetch_osm_buildings_bbox",
+            "_osmnx_fetch_buildings_safe",
+        }
+
+        found = {}
+        for node in tree.body:
+            if isinstance(node, ast.FunctionDef) and node.name in worker_functions:
+                found[node.name] = node
+
+        self.assertEqual(
+            set(found),
+            worker_functions,
+            "Expected background OSM worker functions were not found",
+        )
+
+        violations = []
+
+        for fn_name, fn_node in found.items():
+            for node in ast.walk(fn_node):
+                if isinstance(node, ast.Name) and node.id == "st":
+                    violations.append(
+                        f"{fn_name}: direct Streamlit reference at line {node.lineno}"
+                    )
+
+                if (
+                    isinstance(node, ast.Call)
+                    and isinstance(node.func, ast.Name)
+                    and node.func.id == "_safe_twrite"
+                ):
+                    violations.append(
+                        f"{fn_name}: _safe_twrite call at line {node.lineno}"
+                    )
+
+        self.assertEqual(
+            violations,
+            [],
+            "Background OSM worker path still depends on Streamlit context:\n"
+            + "\n".join(violations),
+        )
+
     def test_inner_overpass_fetch_has_no_nested_executor(self):
         src = SOURCE.read_text(encoding="utf-8")
         tree = ast.parse(src, filename=str(SOURCE))

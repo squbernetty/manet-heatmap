@@ -1165,8 +1165,8 @@ def _osmnx_fetch_buildings_safe(
     endpoints: list[str] | None = None,
 ) -> tuple[gpd.GeoDataFrame, str | None]:
     """
-    Rotate across Overpass mirrors with per-attempt timeouts.
-    Runs the core OSMnx fetch in a worker thread to avoid blocking the UI.
+    Rotate across Overpass mirrors with OSMnx/requests timeouts.
+    This function is synchronous; the outer UI helper owns the asynchronous boundary.
     Returns (GeoDataFrame, working_endpoint | None). If all fail, returns (empty_gdf, "OverpassFetchFailed").
     """
     from requests.exceptions import ConnectionError as ReqConnError
@@ -1212,7 +1212,6 @@ def _osmnx_fetch_buildings_safe(
                 # Non-fatal; continue with defaults
                 pass
 
-            _safe_twrite("osm", attempt=i, endpoint=ep, client_timeout_s=t_client)
 
             # The outer Streamlit-facing helper owns the only asynchronous
             # boundary. OSMnx performs the blocking request synchronously here
@@ -1227,20 +1226,16 @@ def _osmnx_fetch_buildings_safe(
 
             if g is None or getattr(g, "empty", True):
                 # Treat None/empty as non-fatal; try next endpoint
-                _safe_twrite("osm", attempt=i, endpoint=ep, empty=True)
                 logger.warning("Overpass returned empty on %s (attempt %d)", ep, i)
                 continue
 
             # Success
-            _safe_twrite("osm", attempt=i, endpoint=ep, ok=True, rows=int(len(g)))
             return g, ep
 
         except (Timeout, ReqConnError) as e:
-            _safe_twrite("osm", attempt=i, endpoint=ep, error=type(e).__name__)
             logger.warning("Overpass error %s on %s (attempt %d)", type(e).__name__, ep, i)
             continue
         except Exception as e:
-            _safe_twrite("osm", attempt=i, endpoint=ep, error=type(e).__name__)
             logger.exception("Overpass unexpected error on %s (attempt %d)", ep, i)
             continue
 
@@ -1317,20 +1312,18 @@ def _load_local_buildings(fp: Path) -> gpd.GeoDataFrame:
 
 # ------------------- OSM buildings fetch -------------------
 def fetch_osm_buildings_bbox(
-    lat_s: float, lat_n: float, lon_w: float, lon_e: float
+    lat_s: float,
+    lat_n: float,
+    lon_w: float,
+    lon_e: float,
+    osm_timeout_s: int = 30,
+    skip_if_slow: bool = True,
 ) -> gpd.GeoDataFrame:
-    osm_timeout_s: int = int(st.session_state.get("osm_timeout_s", 30))
-    skip_if_slow: bool = bool(st.session_state.get("skip_if_slow", True))
+    osm_timeout_s = int(osm_timeout_s)
+    skip_if_slow = bool(skip_if_slow)
 
     north, south, east, west = float(lat_n), float(lat_s), float(lon_e), float(lon_w)
     tags: dict[str, bool | str | list[str]] = {"building": True}
-
-    _safe_twrite(
-        "osm",
-        started=time.strftime("%Y-%m-%d %H:%M:%S"),
-        bbox=dict(n=north, s=south, e=east, w=west),
-        timeout_s=int(osm_timeout_s),
-    )
 
     _osmnx_set_timeout(osm_timeout_s)
     logger.info(
@@ -1350,23 +1343,15 @@ def fetch_osm_buildings_bbox(
     fetch_dt = round(time.perf_counter() - t_fetch, 3)
     raw_rows = 0 if g is None else int(len(g))
     logger.info("OSM fetch completed in %.3fs; raw rows=%d", fetch_dt, raw_rows)
-    _safe_twrite("osm", fetch_seconds=fetch_dt, raw_rows=raw_rows)
-
     if err is not None:
-        _safe_twrite("osm", error=err)
+        logger.warning(
+            "Overpass fetch failed (%s); skipping building attenuation for this run.",
+            err,
+        )
         if skip_if_slow:
-            st.warning(
-                "Overpass is slow or unreachable. Skipping building attenuation for this run."
-            )
             return gpd.GeoDataFrame(geometry=[], crs="EPSG:4326")
 
     if g is None or g.empty:
-        _safe_twrite(
-            "osm",
-            polygons_before=0,
-            polygons_after=0,
-            post_seconds=round(time.perf_counter() - t0, 3),
-        )
         return gpd.GeoDataFrame(geometry=[], crs="EPSG:4326")
 
     polygons_before = int(len(g[g.geom_type.isin(["Polygon", "MultiPolygon"])]))
@@ -1374,12 +1359,6 @@ def fetch_osm_buildings_bbox(
 
     post_dt = round(time.perf_counter() - t0, 3)
     logger.info("OSM post-process: polygons=%d in %.3fs", len(bout), post_dt)
-    _safe_twrite(
-        "osm",
-        polygons_before=polygons_before,
-        polygons_after=int(len(bout)),
-        post_seconds=post_dt,
-    )
     return bout
 
 
@@ -1471,12 +1450,19 @@ def _fetch_osm_bbox_with_ui_cap(
             return active.get("res_holder", {}).get("gdf", _empty())
 
     lat_s, lat_n, lon_w, lon_e = bbox
+    osm_timeout_s = int(st.session_state.get("osm_timeout_s", 30))
+    skip_if_slow = bool(st.session_state.get("skip_if_slow", True))
     res_holder: dict[str, gpd.GeoDataFrame] = {}
 
     def _runner():
         try:
             res_holder["gdf"] = fetch_osm_buildings_bbox(
-                lat_s, lat_n, lon_w, lon_e
+                lat_s,
+                lat_n,
+                lon_w,
+                lon_e,
+                osm_timeout_s=osm_timeout_s,
+                skip_if_slow=skip_if_slow,
             )
         except Exception:
             res_holder["gdf"] = _empty()
